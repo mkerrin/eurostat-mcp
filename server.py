@@ -485,6 +485,33 @@ async def get_dataset_info(dataset_id: str) -> str:
         return f"Error getting dataset info: {str(e)}"
 
 
+async def _get_dimension_order(client: httpx.AsyncClient, dataset_id: str) -> list[str]:
+    """
+    Fetch the ordered list of dimension IDs for a dataset (excluding TIME_PERIOD).
+
+    SDMX 2.1 queries are key-based: dimension values are positional and
+    dot-separated (e.g. ".CP_MEUR.B1GQ.DE"), so we need the dimension order
+    to build a filtered query. Returns [] if it cannot be determined.
+    """
+    url = f"{BASE_URL}/sdmx/2.1/datastructure/ESTAT/{dataset_id.upper()}"
+    headers = {"Accept": "application/xml", "Accept-Encoding": "identity"}
+    response = await client.get(url, headers=headers)
+    response.raise_for_status()
+
+    root = ET.fromstring(response.text)
+    dims = []
+    for el in root.iter():
+        # Match Dimension elements regardless of XML namespace; TimeDimension
+        # is intentionally excluded (handled via startPeriod/endPeriod).
+        if el.tag.split("}")[-1] == "Dimension":
+            dim_id = el.get("id")
+            position = el.get("position")
+            if dim_id:
+                dims.append((int(position) if position else 999, dim_id))
+
+    return [dim_id for _, dim_id in sorted(dims)]
+
+
 async def _query_sdmx21(
     client: httpx.AsyncClient,
     dataset_id: str,
@@ -495,17 +522,44 @@ async def _query_sdmx21(
     format: str,
     use_comext_base: bool = False
 ) -> str:
-    """Query data using SDMX 2.1 API."""
+    """Query data using SDMX 2.1 API (key-based path)."""
     params = {}
     headers = {"Accept-Encoding": "identity"}
 
-    # For SDMX 2.1, we use a simpler URL format with query params
     if use_comext_base:
         base_url = COMEXT_SDMX_BASE
     else:
         base_url = f"{BASE_URL}/sdmx/2.1"
 
+    # Build a {DIMENSION: value} map from filters + geo. SDMX 2.1 separates
+    # multiple values within a dimension with "+", so normalize commas to "+".
+    filter_dict = {}
+    if filters:
+        for filter_part in filters.split("&"):
+            if "=" in filter_part:
+                k, v = filter_part.split("=", 1)
+                filter_dict[k.strip().upper()] = v.strip().replace(",", "+")
+    if geo:
+        filter_dict["GEO"] = geo.replace(",", "+")
+
+    # Build the positional key path so filters are actually applied. Without
+    # this, an unkeyed URL returns the ENTIRE dataset regardless of filters.
     url = f"{base_url}/data/{dataset_id}"
+    if filter_dict:
+        try:
+            dim_order = await _get_dimension_order(client, dataset_id)
+        except Exception as e:
+            logger.warning(f"Could not fetch dimension order for {dataset_id}: {e}")
+            dim_order = []
+
+        if dim_order:
+            key = ".".join(filter_dict.get(dim.upper(), "") for dim in dim_order)
+            url = f"{base_url}/data/{dataset_id}/{key}"
+        else:
+            logger.warning(
+                f"No dimension order for {dataset_id}; SDMX 2.1 query cannot apply "
+                f"filters {filter_dict} and would return the full dataset."
+            )
 
     # Time period params for SDMX 2.1
     if time_period:
@@ -666,12 +720,13 @@ async def query_eurostat_data(
             # Try SDMX 3.0 format first for regular datasets
             url = f"{SDMX_BASE}/data/dataflow/ESTAT/{dataset_id}/1.0/*"
 
-            # Add filters using c[DIMENSION] format
+            # Add filters using c[DIMENSION] format. SDMX 3.0 separates multiple
+            # values within a dimension with commas, so normalize "+" -> ",".
             if filters:
                 for filter_part in filters.split("&"):
                     if "=" in filter_part:
                         key, value = filter_part.split("=", 1)
-                        params[f"c[{key}]"] = value
+                        params[f"c[{key}]"] = value.replace("+", ",")
 
             if time_period:
                 if time_period.startswith(("ge:", "le:", "gt:", "lt:")):
@@ -680,7 +735,7 @@ async def query_eurostat_data(
                     params["c[TIME_PERIOD]"] = f"eq:{time_period}"
 
             if geo:
-                params["c[GEO]"] = geo
+                params["c[GEO]"] = geo.replace("+", ",")
 
             if format == "csv":
                 headers["Accept"] = "application/vnd.sdmx.data+csv;version=2.0.0;labels=name"
