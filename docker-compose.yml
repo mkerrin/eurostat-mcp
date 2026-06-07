@@ -1,0 +1,39 @@
+# Eurostat MCP server over Streamable HTTP.
+#
+#   docker compose up --build        # start the server
+#   # MCP endpoint:  http://localhost:8002/mcp
+#
+# Register it with an MCP client, e.g. .mcp.json:
+#   {
+#     "mcpServers": {
+#       "eurostat": {
+#         "type": "http",
+#         "url": "http://localhost:8002/mcp"
+#       }
+#     }
+#   }
+#
+# To run over stdio instead (the local default), set MCP_TRANSPORT=stdio and
+# launch with `docker compose run --rm -i eurostat`.
+
+services:
+  eurostat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: eurostat-mcp
+    ports:
+      - "${MCP_PORT:-8002}:8002"
+    environment:
+      MCP_TRANSPORT: streamable-http
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: 8002
+    # Talks only to the public Eurostat APIs over HTTPS; no secrets, no volumes.
+    restart: unless-stopped
+    healthcheck:
+      # Prove the HTTP server is accepting connections on the port.
+      test: ["CMD", "python", "-c", "import socket,sys; s=socket.socket(); s.settimeout(3); sys.exit(s.connect_ex(('127.0.0.1', 8002)))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

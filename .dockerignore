@@ -1,0 +1,34 @@
+# Local virtual env — rebuilt inside the image from uv.lock
+.venv/
+venv/
+env/
+ENV/
+
+# Python caches / build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+build/
+dist/
+*.egg-info/
+
+# VCS / IDE / OS cruft
+.git/
+.idea/
+.vscode/
+*.sw?
+*~
+.DS_Store
+Thumbs.db
+
+# Project scratch output and logs (see CLAUDE.md / .gitignore)
+data/
+*.csv
+*.log
+.env
+.env.local
+
+# Docker files themselves
+Dockerfile
+.dockerignore
+docker-compose.yml

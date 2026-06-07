@@ -24,8 +24,19 @@ logging.basicConfig(
 )
 logger = logging.getLogger("eurostat-mcp")
 
-# Initialize the MCP server
-mcp = FastMCP("eurostat")
+# Transport is selectable so the same code runs over stdio (the default, used by
+# the local .mcp.json registration) or over Streamable HTTP (used when running
+# in a container / as a networked service).
+#   MCP_TRANSPORT: "stdio" (default) | "streamable-http" | "sse"
+#   MCP_HOST:      bind address for HTTP transports (default 127.0.0.1)
+#   MCP_PORT:      bind port for HTTP transports (default 8002)
+MCP_TRANSPORT = os.getenv("MCP_TRANSPORT", "stdio").strip().lower()
+MCP_HOST = os.getenv("MCP_HOST", "127.0.0.1")
+MCP_PORT = int(os.getenv("MCP_PORT", "8002"))
+
+# Initialize the MCP server. host/port only matter for the HTTP transports but
+# are harmless under stdio.
+mcp = FastMCP("eurostat", host=MCP_HOST, port=MCP_PORT)
 
 # Eurostat API base URLs
 # Regular datasets use the standard dissemination API
@@ -1237,5 +1248,17 @@ async def export_multiple_datasets(
 
 
 if __name__ == "__main__":
-    logger.info("Starting Eurostat MCP server...")
-    mcp.run(transport="stdio")
+    if MCP_TRANSPORT in ("streamable-http", "http"):
+        logger.info(
+            "Starting Eurostat MCP server (streamable-http) on %s:%s%s",
+            MCP_HOST,
+            MCP_PORT,
+            mcp.settings.streamable_http_path,
+        )
+        mcp.run(transport="streamable-http")
+    elif MCP_TRANSPORT == "sse":
+        logger.info("Starting Eurostat MCP server (sse) on %s:%s", MCP_HOST, MCP_PORT)
+        mcp.run(transport="sse")
+    else:
+        logger.info("Starting Eurostat MCP server (stdio)...")
+        mcp.run(transport="stdio")
